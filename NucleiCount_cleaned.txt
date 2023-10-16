@@ -1,0 +1,115 @@
+
+import torch
+import torch.nn as nn
+from math import floor
+import os
+import random
+import numpy as np
+import pdb
+import time
+from torch.utils.data import DataLoader
+import argparse
+from PIL import Image
+import h5py
+import openslide
+from pathlib import Path as pl
+from torchvision import transforms
+from openslide import open_slide
+import json
+import cv2
+import matplotlib.pyplot as plt
+import glob
+from histocartography.preprocessing import NucleiExtractor,DeepFeatureExtractor
+import scipy as sp
+
+import skimage.io
+import skimage.measure
+import skimage.color
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import histomicstk as htk
+
+#Some nice default configuration for plots
+plt.rcParams['figure.figsize'] = 10, 10
+plt.rcParams['image.cmap'] = 'gray'
+titlesize = 24
+
+# Parent Directory path
+parent_dir = "/home/Drive3/PANCANCER_TATA/Breast_f/Train/Tumor/"
+p1_str = "slide0_tumor_patch6.png"
+p2_str = "slide0_tumor_patch26.png"
+im_input = cv2.imread(parent_dir+p2_str)
+print(im_input.dtype)
+
+# get nuclei/hematoxylin channel
+im_nuclei_stain = im_input[:, :, 0]
+
+# segment foreground
+foreground_threshold = 150
+
+im_fgnd_mask = sp.ndimage.binary_fill_holes(
+    im_nuclei_stain < foreground_threshold).astype('int')
+print(np.mean(im_fgnd_mask))
+
+# run adaptive multi-scale LoG filter
+min_radius = 3
+max_radius = 8
+
+im_log_max, im_sigma_max = htk.filters.shape.cdog(
+    im_nuclei_stain, im_fgnd_mask,
+    sigma_min=min_radius * np.sqrt(2),
+    sigma_max=max_radius * np.sqrt(2))
+
+# detect and segment nuclei using local maximum clustering
+local_max_search_radius = 5
+
+im_nuclei_seg_mask, seeds, maxima = htk.segmentation.nuclear.max_clustering(
+    im_log_max, im_fgnd_mask, local_max_search_radius)
+
+
+# filter out small objects
+min_nucleus_area = 10
+
+im_nuclei_seg_mask = htk.segmentation.label.area_open(
+    im_nuclei_seg_mask, min_nucleus_area)#.astype(int)
+
+
+# compute nuclei properties
+objProps = skimage.measure.regionprops(im_nuclei_seg_mask)
+
+# print(objProps)
+print('Number of nuclei = ', len(objProps))
+
+
+plt.figure(figsize=(20, 10))
+
+plt.subplot(1, 2, 1)
+plt.imshow(skimage.color.label2rgb(im_nuclei_seg_mask, im_input, bg_label=0), origin='lower')
+plt.title('Nuclei segmentation mask overlay', fontsize=titlesize)
+
+plt.subplot(1, 2, 2)
+plt.imshow( im_input )
+plt.xlim([0, im_input.shape[1]])
+plt.ylim([0, im_input.shape[0]])
+plt.title('Nuclei bounding boxes', fontsize=titlesize)
+
+for i in range(len(objProps)):
+
+    c = [objProps[i].centroid[1], objProps[i].centroid[0], 0]
+    width = objProps[i].bbox[3] - objProps[i].bbox[1] + 1
+    height = objProps[i].bbox[2] - objProps[i].bbox[0] + 1
+
+    cur_bbox = {
+        "type":        "rectangle",
+        "center":      c,
+        "width":       width,
+        "height":      height,
+    }
+
+    plt.plot(c[0], c[1], 'g+')
+    mrect = mpatches.Rectangle([c[0] - 0.5 * width, c[1] - 0.5 * height] ,
+                               width, height, fill=False, ec='g', linewidth=2)
+    plt.gca().add_patch(mrect)
+
+plt.savefig('/home/Drive3/PANCANCER_TATA/fig_t6.png')
